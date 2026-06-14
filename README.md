@@ -1,5 +1,3 @@
-@'
-
 # АВТОСНАБ Test Task
 
 FastAPI-сервис для обработки запросов с кадастровым номером, широтой и долготой.
@@ -265,3 +263,6 @@ docker compose down
 ```bash
 docker compose down -v
 ```
+
+
+
