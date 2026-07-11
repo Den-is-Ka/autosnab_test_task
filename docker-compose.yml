@@ -15,18 +15,57 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  emulator:
+    build: .
+    container_name: autosnab_emulator
+    command: ["uvicorn", "emulator.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      EMULATOR_MIN_DELAY_SECONDS: 0
+      EMULATOR_MAX_DELAY_SECONDS: 60
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/ping')",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
 
   app:
     build: .
     container_name: autosnab_app
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/autosnab_db
-      EXTERNAL_SERVER_URL: http://127.0.0.1:8000/result
+      EXTERNAL_SERVER_URL: http://emulator:8001/result
+      EXTERNAL_TIMEOUT_SECONDS: 65
+      LOG_LEVEL: INFO
     ports:
       - "8000:8000"
     depends_on:
       db:
         condition: service_healthy
+      emulator:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ping')",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
 
 volumes:
   postgres_data:
