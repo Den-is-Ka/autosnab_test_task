@@ -1,66 +1,167 @@
 # АВТОСНАБ Test Task
 
-Асинхронный FastAPI-сервис, который принимает кадастровый номер, широту и долготу, отправляет данные на эмулируемый внешний сервер, сохраняет запрос и итог его обработки в PostgreSQL и предоставляет историю запросов.
+Асинхронный сервис на FastAPI, который принимает кадастровый номер, широту и долготу, отправляет данные на эмулируемый внешний сервер, сохраняет запрос и результат его обработки в PostgreSQL и предоставляет API для просмотра истории.
 
-## Что реализовано
+Запрос сохраняется в базе данных **до** обращения к внешнему сервису. Благодаря этому в истории остаются не только успешные операции, но и тайм-ауты или ошибки соединения.
 
-- `POST /query` — приём и обработка запроса;
-- `GET /ping` — проверка запуска API;
-- `GET /health` — проверка API и PostgreSQL;
-- `GET /history` — история с фильтрами и пагинацией;
-- `GET /history/{request_id}` — отдельная запись истории;
-- `GET/POST /result` — встроенный совместимый эмулятор;
-- отдельный Docker-сервис `emulator`, закрывающий дополнительное задание №1;
-- асинхронные HTTP-запросы через `httpx.AsyncClient`;
-- PostgreSQL и прямые асинхронные запросы через `asyncpg`;
-- raw SQL migrations;
-- сохранение успешных ответов, тайм-аутов и ошибок;
-- Pydantic-валидация;
-- Swagger и ReDoc;
-- unit/API tests и GitHub Actions.
+## Соответствие тестовому заданию
+
+### Обязательная часть
+
+* Python 3.9+;
+* FastAPI с асинхронными endpoint;
+* PostgreSQL;
+* прямые асинхронные запросы через `asyncpg`;
+* raw SQL migrations;
+* Dockerfile;
+* Docker Compose;
+* Pytest;
+* `/query`;
+* `/ping`;
+* `/history`;
+* `/result`;
+* сохранение запроса и ответа внешнего сервера;
+* README с инструкцией запуска.
+
+### Дополнительные возможности
+
+* отдельный Docker-сервис `emulator` — дополнительное задание №1;
+* проверка доступности PostgreSQL через `/health`;
+* фильтрация истории;
+* пагинация;
+* получение отдельной записи истории;
+* сохранение ошибок и тайм-аутов;
+* автоматические тесты;
+* GitHub Actions;
+* Swagger и ReDoc;
+* PowerShell и Bash smoke tests.
+
+Регистрация, авторизация и админ-панель в текущей версии не реализованы. Они не входят в обязательную часть задания.
 
 ## Стек
 
-- Python 3.11
-- FastAPI
-- PostgreSQL 16
-- asyncpg
-- httpx
-- Pydantic Settings
-- Docker / Docker Compose
-- Pytest
-- Raw SQL migrations
+* Python 3.11
+* FastAPI
+* Uvicorn
+* PostgreSQL 16
+* asyncpg
+* httpx
+* Pydantic
+* Pydantic Settings
+* Docker
+* Docker Compose
+* Pytest
+* pytest-asyncio
+* Raw SQL migrations
+* GitHub Actions
 
 ## Архитектура
 
 ```text
 Client
-  -> FastAPI /query
-      -> INSERT status=processing
-      -> ExternalServiceClient
-          -> separate emulator service /result
-      -> UPDATE completed / timeout / failed
-      -> PostgreSQL
+  |
+  v
+FastAPI: POST /query
+  |
+  +--> PostgreSQL: INSERT status=processing
+  |
+  +--> ExternalServiceClient
+  |       |
+  |       v
+  |    Emulator: POST /result
+  |
+  +--> PostgreSQL:
+          UPDATE status=completed
+          UPDATE status=timeout
+          UPDATE status=failed
 ```
 
-Запись создаётся **до** вызова внешнего сервиса. Поэтому попытка не пропадает из истории даже при тайм-ауте или сетевой ошибке.
+Основные компоненты:
 
-## Запуск через Docker
+```text
+app/
+├── config.py             # настройки приложения
+├── database.py           # пул соединений и запуск миграций
+├── crud.py               # запросы к PostgreSQL
+├── external_client.py    # асинхронный HTTP-клиент
+├── services.py           # бизнес-логика обработки запроса
+├── schemas.py            # Pydantic-схемы
+└── main.py               # FastAPI-приложение и endpoint
+
+emulator/
+└── main.py               # отдельный эмулятор внешнего сервера
+
+migrations/
+├── 001_create_requests_history.sql
+└── 002_add_request_status_and_errors.sql
+
+scripts/
+├── smoke_test.ps1
+└── smoke_test.sh
+
+tests/
+├── test_api.py
+├── test_emulator.py
+└── test_external_client.py
+```
+
+## API
+
+| Метод  | Endpoint                | Назначение                                 |
+| ------ | ----------------------- | ------------------------------------------ |
+| `GET`  | `/ping`                 | Проверка запуска основного API             |
+| `GET`  | `/health`               | Проверка API и подключения к PostgreSQL    |
+| `POST` | `/query`                | Отправка запроса по кадастровому номеру    |
+| `GET`  | `/history`              | Получение истории с фильтрами и пагинацией |
+| `GET`  | `/history/{request_id}` | Получение одной записи истории             |
+| `POST` | `/result`               | Основной endpoint эмулятора                |
+| `GET`  | `/result`               | Упрощённый совместимый вызов эмулятора     |
+
+## Быстрый запуск через Docker
+
+### Требования
+
+Перед запуском должны быть установлены:
+
+* Docker;
+* Docker Compose;
+* запущенный Docker Engine или Docker Desktop.
+
+### Запуск
 
 ```bash
 docker compose up --build
 ```
 
-После запуска:
+Для запуска в фоновом режиме:
 
-- API: `http://localhost:8000`
-- Swagger: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-- Emulator Swagger: `http://localhost:8001/docs`
+```bash
+docker compose up --build -d
+```
 
-Миграции применяются автоматически при старте API.
+Docker Compose запускает три контейнера:
 
-## Быстрая проверка
+* `autosnab_app`;
+* `autosnab_emulator`;
+* `autosnab_postgres`.
+
+Миграции применяются автоматически при запуске основного API.
+
+### Адреса после запуска
+
+* API: `http://localhost:8000`
+* Swagger: `http://localhost:8000/docs`
+* ReDoc: `http://localhost:8000/redoc`
+* Emulator API: `http://localhost:8001`
+* Emulator Swagger: `http://localhost:8001/docs`
+
+Проверка состояния контейнеров:
+
+```bash
+docker compose ps
+```
+
+## Проверка API
 
 ### Ping
 
@@ -68,7 +169,23 @@ docker compose up --build
 curl http://localhost:8000/ping
 ```
 
-### Отправка запроса
+Ответ:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+### Health check
+
+```bash
+curl http://localhost:8000/health
+```
+
+Endpoint проверяет не только запуск FastAPI, но и доступность PostgreSQL.
+
+## Отправка запроса
 
 ```bash
 curl -X POST http://localhost:8000/query \
@@ -80,7 +197,9 @@ curl -X POST http://localhost:8000/query \
   }'
 ```
 
-Успешный ответ:
+Эмулятор может обрабатывать запрос до 60 секунд. Это ожидаемое поведение, а не зависание приложения.
+
+Пример успешного ответа:
 
 ```json
 {
@@ -90,7 +209,9 @@ curl -X POST http://localhost:8000/query \
   "longitude": 60.6057,
   "status": "completed",
   "result": true,
-  "external_response": {"result": true},
+  "external_response": {
+    "result": true
+  },
   "error_message": null,
   "created_at": "2026-07-11T12:00:00Z",
   "completed_at": "2026-07-11T12:00:04Z",
@@ -98,61 +219,132 @@ curl -X POST http://localhost:8000/query \
 }
 ```
 
-При тайм-ауте API возвращает `504`, но запись сохраняется в PostgreSQL со статусом `timeout`. При другой ожидаемой ошибке внешнего сервера возвращается `502`, а запись получает статус `failed`.
+Значения `true` и `false` являются корректными успешными ответами внешнего сервера.
 
-## История
+## Обработка ошибок
 
-Вся история:
+Запрос сначала сохраняется со статусом:
+
+```text
+processing
+```
+
+После обращения к внешнему сервису запись получает один из статусов:
+
+* `completed` — внешний сервер успешно вернул `true` или `false`;
+* `timeout` — внешний сервер не ответил за установленное время;
+* `failed` — ошибка соединения, HTTP-ошибка или некорректный ответ.
+
+При тайм-ауте API возвращает:
+
+```text
+504 Gateway Timeout
+```
+
+При другой ожидаемой ошибке внешнего сервиса:
+
+```text
+502 Bad Gateway
+```
+
+При этом запись не удаляется и остаётся доступной через `/history`.
+
+## История запросов
+
+### Вся история
 
 ```bash
 curl "http://localhost:8000/history"
 ```
 
-Фильтр по кадастровому номеру:
+### Фильтр по кадастровому номеру
 
 ```bash
 curl "http://localhost:8000/history?cadastral_number=66:41:0101001:123"
 ```
 
-Фильтр по статусу и пагинация:
+### Фильтр по статусу
+
+```bash
+curl "http://localhost:8000/history?status=completed"
+```
+
+### Пагинация
+
+```bash
+curl "http://localhost:8000/history?limit=20&offset=0"
+```
+
+### Комбинированный запрос
 
 ```bash
 curl "http://localhost:8000/history?status=completed&limit=20&offset=0"
 ```
 
-Статусы:
+### Получение одной записи
 
-- `processing`
-- `completed`
-- `timeout`
-- `failed`
+```bash
+curl "http://localhost:8000/history/1"
+```
 
 ## Эмулятор внешнего сервера
 
-Docker Compose запускает отдельный сервис `emulator` на порту `8001`. Основной API обращается к нему по внутреннему адресу:
+В дополнение к встроенному `/result` Docker Compose запускает отдельный сервис `emulator`.
+
+Основной API обращается к нему по внутреннему Docker-адресу:
 
 ```text
 http://emulator:8001/result
 ```
 
-Задержка регулируется переменными:
+Эмулятор:
+
+1. получает кадастровый номер и координаты;
+2. асинхронно ожидает случайное время;
+3. возвращает случайное значение `true` или `false`.
+
+Задержка регулируется переменными окружения:
 
 ```env
 EMULATOR_MIN_DELAY_SECONDS=0
 EMULATOR_MAX_DELAY_SECONDS=60
 ```
 
-Для быстрой локальной демонстрации можно установить максимум `5`, а в тестах используется задержка `0`.
+Для быстрой локальной демонстрации максимальную задержку можно временно уменьшить до `5`.
+
+В автоматических тестах используется задержка `0`, поэтому тесты не ожидают реальных 60 секунд.
 
 ## Переменные окружения
 
-Скопируйте пример:
+Пример настроек находится в `.env.example`.
+
+### Windows PowerShell
+
+```powershell
+Copy-Item .env.example .env
+```
+
+### Linux и macOS
 
 ```bash
 cp .env.example .env
 ```
 
-Основные параметры:
+### Запуск внутри Docker Compose
+
+Внутри Docker используются имена сервисов:
+
+```env
+DATABASE_URL=postgresql://postgres:postgres@db:5432/autosnab_db
+EXTERNAL_SERVER_URL=http://emulator:8001/result
+EXTERNAL_TIMEOUT_SECONDS=65
+EMULATOR_MIN_DELAY_SECONDS=0
+EMULATOR_MAX_DELAY_SECONDS=60
+```
+
+### Локальный запуск вне Docker
+
+При запуске API непосредственно на компьютере используются локальные адреса:
 
 ```env
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/autosnab_db
@@ -162,77 +354,177 @@ EMULATOR_MIN_DELAY_SECONDS=0
 EMULATOR_MAX_DELAY_SECONDS=60
 ```
 
+Тайм-аут основного API установлен в 65 секунд, потому что эмулятор может обрабатывать запрос до 60 секунд.
+
 ## Миграции
 
-Миграции находятся в `migrations/` и применяются в алфавитном порядке. Выполненные файлы фиксируются в `schema_migrations`, поэтому повторно не запускаются.
+Миграции находятся в каталоге:
 
-`002_add_request_status_and_errors.sql` безопасно обновляет существующую таблицу из первой версии проекта и сохраняет ранее созданные записи.
+```text
+migrations/
+```
 
-## Тесты
+Они применяются автоматически в алфавитном порядке.
 
-Локально:
+Информация о выполненных миграциях сохраняется в таблице:
+
+```text
+schema_migrations
+```
+
+Поэтому уже применённые SQL-файлы повторно не запускаются.
+
+Миграция:
+
+```text
+002_add_request_status_and_errors.sql
+```
+
+обновляет существующую таблицу первой версии проекта и сохраняет ранее созданные записи.
+
+Она добавляет:
+
+* статус обработки;
+* возможность хранить `NULL` до получения результата;
+* ответ внешнего сервера;
+* сообщение об ошибке;
+* время завершения;
+* длительность обработки.
+
+## Локальный запуск тестов
+
+### Windows PowerShell
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+pytest -v
+```
+
+### Linux и macOS
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-pytest
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+pytest -v
 ```
 
-С покрытием:
+Ожидаемый результат:
+
+```text
+19 passed
+```
+
+## Покрытие тестами
 
 ```bash
 pytest --cov=app --cov=emulator --cov-report=term-missing
 ```
 
-Через Docker:
-
-```bash
-docker compose run --rm app pytest
-```
-
 Тесты проверяют:
 
-- `/ping`;
-- валидацию кадастрового номера и координат;
-- успешные результаты `true` и `false`;
-- сохранение timeout и failed;
-- фильтрацию и пагинацию истории;
-- строгую проверку ответа внешнего сервера;
-- работу отдельного emulator endpoint.
+* `/ping`;
+* валидацию кадастрового номера;
+* валидацию широты и долготы;
+* успешный результат `true`;
+* успешный результат `false`;
+* сохранение запроса;
+* сохранение статуса `timeout`;
+* сохранение статуса `failed`;
+* фильтрацию истории;
+* пагинацию;
+* получение отдельной записи;
+* строгую проверку ответа внешнего сервера;
+* некорректный JSON;
+* неправильный тип поля `result`;
+* работу отдельного emulator endpoint.
+
+## Тесты внутри Docker
+
+При уже запущенных контейнерах:
+
+```bash
+docker compose exec app pytest -v
+```
+
+Одноразовый запуск тестового контейнера:
+
+```bash
+docker compose run --rm app pytest -v
+```
+
+## Smoke test
+
+После запуска Docker Compose основной E2E-сценарий можно проверить одной командой.
+
+Smoke test выполняет:
+
+1. `GET /ping`;
+2. `POST /query`;
+3. ожидание ответа эмулятора;
+4. `GET /history`;
+5. проверку сохранённой записи.
+
+### Windows PowerShell
+
+```powershell
+.\scripts\smoke_test.ps1
+```
+
+### Linux и macOS
+
+```bash
+chmod +x scripts/smoke_test.sh
+./scripts/smoke_test.sh
+```
+
+Ожидаемый результат:
+
+```text
++ Smoke test passed
+```
+
+Во время ручной проверки был успешно выполнен запрос с длительностью около 57 секунд, что подтверждает работу сценария с обработкой до 60 секунд.
+
+## GitHub Actions
+
+Workflow находится в:
+
+```text
+.github/workflows/tests.yml
+```
+
+При отправке изменений и создании Pull Request автоматически запускаются тесты проекта.
 
 ## Остановка
+
+Остановить контейнеры:
 
 ```bash
 docker compose down
 ```
 
-Удаление данных PostgreSQL:
+Остановить контейнеры и удалить данные PostgreSQL:
 
 ```bash
 docker compose down -v
 ```
 
+Команда с `-v` полностью удаляет Docker volume с базой данных.
+
 ## Принятые решения по неоднозначностям ТЗ
 
-1. `/query` принимает кадастровый номер, широту и долготу, поскольку эти три значения перечислены в основном описании задания.
-2. `/result` принимает `POST` с теми же данными. Для совместимости также оставлен `GET`.
-3. Внешний timeout равен 65 секундам, потому что эмулятор может обрабатывать запрос до 60 секунд.
-4. Ошибочные запросы сохраняются в истории так же, как успешные.
-5. Авторизация и админ-панель не добавлены в основное ядро, чтобы не усложнять проверку обязательной функциональности. Они могут быть реализованы отдельным следующим этапом.
+1. `/query` принимает кадастровый номер, широту и долготу, поскольку все три значения перечислены в основном описании задания.
+2. Основной метод эмулятора — `POST /result`, потому что ему передаются данные запроса.
+3. Для совместимости также доступен `GET /result`.
+4. Внешний тайм-аут установлен в 65 секунд, поскольку обработка на эмуляторе может занимать до 60 секунд.
+5. Запрос сохраняется до обращения к внешнему серверу.
+6. Ошибочные запросы и тайм-ауты сохраняются в истории наравне с успешными.
+7. `false` считается корректным результатом, а не ошибкой.
+8. Отдельный эмулятор реализован как самостоятельный Docker-сервис.
+9. Авторизация и админ-панель не добавлены в обязательное ядро, чтобы не усложнять первичную проверку сервиса.
 
-## Smoke test
-
-После запуска Docker Compose можно проверить основной E2E-сценарий одной командой.
-
-Windows PowerShell:
-
-```powershell
-./scripts/smoke_test.ps1
-```
-
-Linux/macOS:
-
-```bash
-./scripts/smoke_test.sh
-```
