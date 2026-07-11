@@ -1,95 +1,86 @@
 # АВТОСНАБ Test Task
 
-FastAPI-сервис для обработки запросов с кадастровым номером, широтой и долготой.
+Асинхронный FastAPI-сервис, который принимает кадастровый номер, широту и долготу, отправляет данные на эмулируемый внешний сервер, сохраняет запрос и итог его обработки в PostgreSQL и предоставляет историю запросов.
 
-Сервис принимает данные, эмулирует обращение к внешнему серверу, получает результат `true` или `false`, сохраняет запрос и результат в PostgreSQL и предоставляет API для просмотра истории запросов.
+## Что реализовано
+
+- `POST /query` — приём и обработка запроса;
+- `GET /ping` — проверка запуска API;
+- `GET /health` — проверка API и PostgreSQL;
+- `GET /history` — история с фильтрами и пагинацией;
+- `GET /history/{request_id}` — отдельная запись истории;
+- `GET/POST /result` — встроенный совместимый эмулятор;
+- отдельный Docker-сервис `emulator`, закрывающий дополнительное задание №1;
+- асинхронные HTTP-запросы через `httpx.AsyncClient`;
+- PostgreSQL и прямые асинхронные запросы через `asyncpg`;
+- raw SQL migrations;
+- сохранение успешных ответов, тайм-аутов и ошибок;
+- Pydantic-валидация;
+- Swagger и ReDoc;
+- unit/API tests и GitHub Actions.
 
 ## Стек
 
-* Python 3.11
-* FastAPI
-* PostgreSQL
-* asyncpg
-* Docker
-* Docker Compose
-* Pytest
-* Raw SQL migrations
+- Python 3.11
+- FastAPI
+- PostgreSQL 16
+- asyncpg
+- httpx
+- Pydantic Settings
+- Docker / Docker Compose
+- Pytest
+- Raw SQL migrations
 
-## Возможности
+## Архитектура
 
-* Проверка работоспособности сервера
-* Приём кадастрового номера, широты и долготы
-* Валидация входных данных
-* Эмуляция внешнего сервера
-* Сохранение запроса и результата в PostgreSQL
-* Получение истории всех запросов
-* Получение истории по кадастровому номеру
-* Автоматическое применение SQL-миграций при старте приложения
-* Swagger-документация
+```text
+Client
+  -> FastAPI /query
+      -> INSERT status=processing
+      -> ExternalServiceClient
+          -> separate emulator service /result
+      -> UPDATE completed / timeout / failed
+      -> PostgreSQL
+```
 
-## Запуск проекта
+Запись создаётся **до** вызова внешнего сервиса. Поэтому попытка не пропадает из истории даже при тайм-ауте или сетевой ошибке.
 
-Из корня проекта выполните команду:
+## Запуск через Docker
 
 ```bash
 docker compose up --build
 ```
 
-После запуска сервис будет доступен по адресу:
+После запуска:
 
-```text
-http://localhost:8000
+- API: `http://localhost:8000`
+- Swagger: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
+- Emulator Swagger: `http://localhost:8001/docs`
+
+Миграции применяются автоматически при старте API.
+
+## Быстрая проверка
+
+### Ping
+
+```bash
+curl http://localhost:8000/ping
 ```
-
-## Документация API
-
-Swagger UI:
-
-```text
-http://localhost:8000/docs
-```
-
-ReDoc:
-
-```text
-http://localhost:8000/redoc
-```
-
-## Эндпоинты
-
-### Проверка сервера
-
-```http
-GET /ping
-```
-
-Пример ответа:
-
-```json
-{
-  "status": "ok"
-}
-```
-
----
 
 ### Отправка запроса
 
-```http
-POST /query
+```bash
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cadastral_number": "66:41:0101001:123",
+    "latitude": 56.8389,
+    "longitude": 60.6057
+  }'
 ```
 
-Пример тела запроса:
-
-```json
-{
-  "cadastral_number": "66:41:0101001:123",
-  "latitude": 56.8389,
-  "longitude": 60.6057
-}
-```
-
-Пример ответа:
+Успешный ответ:
 
 ```json
 {
@@ -97,169 +88,151 @@ POST /query
   "cadastral_number": "66:41:0101001:123",
   "latitude": 56.8389,
   "longitude": 60.6057,
+  "status": "completed",
   "result": true,
-  "created_at": "2026-06-14T12:00:00.000000Z"
+  "external_response": {"result": true},
+  "error_message": null,
+  "created_at": "2026-07-11T12:00:00Z",
+  "completed_at": "2026-07-11T12:00:04Z",
+  "duration_ms": 4012
 }
 ```
 
----
+При тайм-ауте API возвращает `504`, но запись сохраняется в PostgreSQL со статусом `timeout`. При другой ожидаемой ошибке внешнего сервера возвращается `502`, а запись получает статус `failed`.
 
-### Получение всей истории запросов
+## История
 
-```http
-GET /history
+Вся история:
+
+```bash
+curl "http://localhost:8000/history"
 ```
 
-Пример ответа:
+Фильтр по кадастровому номеру:
 
-```json
-[
-  {
-    "id": 1,
-    "cadastral_number": "66:41:0101001:123",
-    "latitude": 56.8389,
-    "longitude": 60.6057,
-    "result": true,
-    "created_at": "2026-06-14T12:00:00.000000Z"
-  }
-]
+```bash
+curl "http://localhost:8000/history?cadastral_number=66:41:0101001:123"
 ```
 
----
+Фильтр по статусу и пагинация:
 
-### Получение истории по кадастровому номеру
-
-```http
-GET /history?cadastral_number=66:41:0101001:123
+```bash
+curl "http://localhost:8000/history?status=completed&limit=20&offset=0"
 ```
 
----
+Статусы:
 
-### Эмуляция внешнего сервера
+- `processing`
+- `completed`
+- `timeout`
+- `failed`
 
-```http
-GET /result
-```
+## Эмулятор внешнего сервера
 
-Пример ответа:
-
-```json
-{
-  "result": true
-}
-```
-
-или:
-
-```json
-{
-  "result": false
-}
-```
-
-По условию задания внешний сервер может обрабатывать запрос до 60 секунд.
-Для удобства проверки в проекте используется случайная задержка от 1 до 5 секунд.
-
-## Валидация
-
-Для эндпоинта `/query` используется валидация:
-
-* `cadastral_number` — формат `числа:числа:числа:числа`
-* `latitude` — от `-90` до `90`
-* `longitude` — от `-180` до `180`
-
-Пример валидного кадастрового номера:
+Docker Compose запускает отдельный сервис `emulator` на порту `8001`. Основной API обращается к нему по внутреннему адресу:
 
 ```text
-66:41:0101001:123
+http://emulator:8001/result
 ```
 
-## База данных
+Задержка регулируется переменными:
 
-Используется таблица `requests_history`.
-
-Поля:
-
-* `id`
-* `cadastral_number`
-* `latitude`
-* `longitude`
-* `result`
-* `created_at`
-
-SQL-миграции находятся в папке:
-
-```text
-migrations/
+```env
+EMULATOR_MIN_DELAY_SECONDS=0
+EMULATOR_MAX_DELAY_SECONDS=60
 ```
 
-Миграции применяются автоматически при старте приложения.
+Для быстрой локальной демонстрации можно установить максимум `5`, а в тестах используется задержка `0`.
 
 ## Переменные окружения
 
-Пример переменных окружения находится в файле:
+Скопируйте пример:
 
-```text
-.env.example
+```bash
+cp .env.example .env
 ```
 
-Основные переменные:
+Основные параметры:
 
 ```env
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/autosnab_db
-EXTERNAL_SERVER_URL=http://127.0.0.1:8000/result
+EXTERNAL_SERVER_URL=http://127.0.0.1:8001/result
+EXTERNAL_TIMEOUT_SECONDS=65
+EMULATOR_MIN_DELAY_SECONDS=0
+EMULATOR_MAX_DELAY_SECONDS=60
 ```
 
-В Docker Compose для приложения используется подключение к базе данных по адресу:
+## Миграции
 
-```env
-DATABASE_URL=postgresql://postgres:postgres@db:5432/autosnab_db
-```
+Миграции находятся в `migrations/` и применяются в алфавитном порядке. Выполненные файлы фиксируются в `schema_migrations`, поэтому повторно не запускаются.
+
+`002_add_request_status_and_errors.sql` безопасно обновляет существующую таблицу из первой версии проекта и сохраняет ранее созданные записи.
 
 ## Тесты
 
-Для запуска тестов локально:
+Локально:
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
 pytest
 ```
 
-## Пример проверки через Swagger
-
-1. Запустить проект:
+С покрытием:
 
 ```bash
-docker compose up --build
+pytest --cov=app --cov=emulator --cov-report=term-missing
 ```
 
-2. Открыть документацию:
+Через Docker:
 
-```text
-http://localhost:8000/docs
+```bash
+docker compose run --rm app pytest
 ```
 
-3. Проверить `GET /ping`.
+Тесты проверяют:
 
-4. Выполнить `POST /query` с телом:
+- `/ping`;
+- валидацию кадастрового номера и координат;
+- успешные результаты `true` и `false`;
+- сохранение timeout и failed;
+- фильтрацию и пагинацию истории;
+- строгую проверку ответа внешнего сервера;
+- работу отдельного emulator endpoint.
 
-```json
-{
-  "cadastral_number": "66:41:0101001:123",
-  "latitude": 56.8389,
-  "longitude": 60.6057
-}
-```
-
-5. Проверить сохранение данных через `GET /history`.
-
-## Остановка проекта
+## Остановка
 
 ```bash
 docker compose down
 ```
 
-Если нужно удалить также данные PostgreSQL:
+Удаление данных PostgreSQL:
 
 ```bash
 docker compose down -v
+```
+
+## Принятые решения по неоднозначностям ТЗ
+
+1. `/query` принимает кадастровый номер, широту и долготу, поскольку эти три значения перечислены в основном описании задания.
+2. `/result` принимает `POST` с теми же данными. Для совместимости также оставлен `GET`.
+3. Внешний timeout равен 65 секундам, потому что эмулятор может обрабатывать запрос до 60 секунд.
+4. Ошибочные запросы сохраняются в истории так же, как успешные.
+5. Авторизация и админ-панель не добавлены в основное ядро, чтобы не усложнять проверку обязательной функциональности. Они могут быть реализованы отдельным следующим этапом.
+
+## Smoke test
+
+После запуска Docker Compose можно проверить основной E2E-сценарий одной командой.
+
+Windows PowerShell:
+
+```powershell
+./scripts/smoke_test.ps1
+```
+
+Linux/macOS:
+
+```bash
+./scripts/smoke_test.sh
 ```
